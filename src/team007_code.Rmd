@@ -1,0 +1,185 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+"Early Detection of Type 2 Diabetes Using Machine Learning"
+
+Packages
+```{r}
+library(pROC)
+library(PRROC)
+library(caret)
+library(xgboost)
+library(randomForest)
+library(dplyr)  # for data manipulation
+library(ggplot2)  # for plotting if needed
+```
+
+
+1. Data Cleaning
+
+```{r}
+library(tidyverse)
+library(caret)
+
+data <- read.csv("diabetes_binary_health_indicators_BRFSS2015.csv")
+
+str(data)
+
+colSums(is.na(data))  # Should be all 0
+
+data$Diabetes_binary <- factor(data$Diabetes_binary, levels = c(0,1), labels = c("No", "Yes"))
+
+data$Diabetes_binary_num <- ifelse(data$Diabetes_binary == "Yes", 1, 0)
+
+set.seed(42)
+train_index <- createDataPartition(data$Diabetes_binary, p = 0.8, list = FALSE)
+train <- data[train_index, ]
+test <- data[-train_index, ]
+
+```
+
+2. Model Training
+
+🔹 Logistic Regression
+
+
+```{r}
+log_model <- glm(Diabetes_binary ~ . -Diabetes_binary_num, data = train, family = "binomial")
+log_probs <- predict(log_model, newdata = test, type = "response")
+log_preds <- ifelse(log_probs > 0.5, "Yes", "No") %>% factor(levels = c("No", "Yes"))
+
+cat("Logistic Regression:\n")
+print(confusionMatrix(log_preds, test$Diabetes_binary))
+
+log_roc <- roc(test$Diabetes_binary, log_probs)
+plot(log_roc, col = "blue", main = "Logistic Regression - ROC Curve")
+cat("ROC AUC:", auc(log_roc), "\n")
+
+log_pr <- pr.curve(scores.class0 = log_probs[test$Diabetes_binary == "Yes"],
+                   scores.class1 = log_probs[test$Diabetes_binary == "No"], curve = TRUE)
+plot(log_pr, main = "Logistic Regression - PR Curve", col = "blue")
+cat("PR AUC:", log_pr$auc.integral, "\n")
+
+```
+
+
+🔹 Random Forest
+
+```{r}
+rf_model <- randomForest(Diabetes_binary ~ . -Diabetes_binary_num, data = train, ntree = 100)
+rf_probs <- predict(rf_model, newdata = test, type = "prob")[, "Yes"]
+rf_preds <- predict(rf_model, newdata = test)
+
+cat("Random Forest:\n")
+print(confusionMatrix(rf_preds, test$Diabetes_binary))
+
+rf_roc <- roc(test$Diabetes_binary, rf_probs)
+plot(rf_roc, col = "forestgreen", main = "Random Forest - ROC Curve")
+cat("ROC AUC:", auc(rf_roc), "\n")
+
+rf_pr <- pr.curve(scores.class0 = rf_probs[test$Diabetes_binary == "Yes"],
+                  scores.class1 = rf_probs[test$Diabetes_binary == "No"], curve = TRUE)
+plot(rf_pr, main = "Random Forest - PR Curve", col = "forestgreen")
+cat("PR AUC:", rf_pr$auc.integral, "\n")
+
+```
+
+
+🔹 XGBoost
+
+```{r}
+dtrain <- xgb.DMatrix(data = as.matrix(train %>% select(-Diabetes_binary, -Diabetes_binary_num)),
+                      label = train$Diabetes_binary_num)
+dtest <- xgb.DMatrix(data = as.matrix(test %>% select(-Diabetes_binary, -Diabetes_binary_num)),
+                     label = test$Diabetes_binary_num)
+
+xgb_model <- xgb.train(params = list(objective = "binary:logistic", eval_metric = "auc", tree_method = "hist"),
+                       data = dtrain, nrounds = 100)
+
+xgb_probs <- predict(xgb_model, dtest)
+xgb_preds <- ifelse(xgb_probs > 0.5, 1, 0)
+
+cat("XGBoost:\n")
+print(confusionMatrix(factor(xgb_preds, levels = c(0,1)), factor(test$Diabetes_binary_num, levels = c(0,1))))
+
+xgb_roc <- roc(test$Diabetes_binary_num, xgb_probs)
+plot(xgb_roc, col = "darkred", main = "XGBoost - ROC Curve")
+cat("ROC AUC:", auc(xgb_roc), "\n")
+
+xgb_pr <- pr.curve(scores.class0 = xgb_probs[test$Diabetes_binary_num == 1],
+                   scores.class1 = xgb_probs[test$Diabetes_binary_num == 0], curve = TRUE)
+plot(xgb_pr, main = "XGBoost - PR Curve", col = "darkred")
+cat("PR AUC:", xgb_pr$auc.integral, "\n")
+
+```
+
+
+
+3. Model Testing
+
+```{r}
+library(pROC)
+
+log_probs <- predict(log_model, newdata = test, type = "response")
+log_preds <- ifelse(log_probs > 0.5, "Yes", "No") %>% factor(levels = c("No", "Yes"))
+confusionMatrix(log_preds, test$Diabetes_binary)
+
+rf_preds <- predict(rf_model, newdata = test)
+confusionMatrix(rf_preds, test$Diabetes_binary)
+
+xgb_probs <- predict(xgb_model, newdata = dtest)
+xgb_preds <- ifelse(xgb_probs > 0.5, 1, 0)
+confusionMatrix(factor(xgb_preds, levels = c(0,1)), factor(test$Diabetes_binary_num, levels = c(0,1)))
+
+```
+
+4. Visualization
+
+```{r}
+library(PRROC)
+library(corrplot)
+
+roc_log <- roc(test$Diabetes_binary, log_probs)
+roc_rf <- roc(test$Diabetes_binary, predict(rf_model, newdata = test, type = "prob")[, "Yes"])
+roc_xgb <- roc(test$Diabetes_binary_num, xgb_probs)
+
+plot(roc_log, col = "blue", lwd = 2, main = "ROC Curves")
+lines(roc_rf, col = "green", lwd = 2)
+lines(roc_xgb, col = "red", lwd = 2)
+legend("bottomright", legend = c("Logistic", "Random Forest", "XGBoost"),
+       col = c("blue", "green", "red"), lwd = 2)
+
+pr_log <- pr.curve(scores.class0 = log_probs[test$Diabetes_binary == "Yes"],
+                   scores.class1 = log_probs[test$Diabetes_binary == "No"], curve = TRUE)
+pr_rf <- pr.curve(scores.class0 = predict(rf_model, newdata = test, type = "prob")[test$Diabetes_binary == "Yes", "Yes"],
+                  scores.class1 = predict(rf_model, newdata = test, type = "prob")[test$Diabetes_binary == "No", "Yes"], curve = TRUE)
+pr_xgb <- pr.curve(scores.class0 = xgb_probs[test$Diabetes_binary_num == 1],
+                   scores.class1 = xgb_probs[test$Diabetes_binary_num == 0], curve = TRUE)
+
+plot(pr_log$curve[,1], pr_log$curve[,2], type = "l", col = "blue", xlab = "Recall", ylab = "Precision", main = "PR Curves", lwd = 2)
+lines(pr_rf$curve[,1], pr_rf$curve[,2], col = "green", lwd = 2)
+lines(pr_xgb$curve[,1], pr_xgb$curve[,2], col = "red", lwd = 2)
+legend("topright", legend = c("Logistic", "Random Forest", "XGBoost"),
+       col = c("blue", "green", "red"), lwd = 2)
+
+rf_imp <- as.data.frame(importance(rf_model))
+rf_imp$Feature <- rownames(rf_imp)
+top_features <- rf_imp %>% arrange(desc(MeanDecreaseGini)) %>% head(10)
+
+ggplot(top_features, aes(x = reorder(Feature, MeanDecreaseGini), y = MeanDecreaseGini)) +
+  geom_bar(stat = "identity", fill = "orange") +
+  coord_flip() +
+  labs(title = "Top 10 Feature Importances - Random Forest", x = "Feature", y = "Importance")
+
+cor_matrix <- cor(data %>% select(-Diabetes_binary, -Diabetes_binary_num))
+corrplot(cor_matrix, method = "color", type = "upper", tl.cex = 0.8)
+
+ggplot(data, aes(x = Diabetes_binary)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Class Distribution", x = "Diabetes", y = "Count") +
+  theme_minimal()
+
+```
+
